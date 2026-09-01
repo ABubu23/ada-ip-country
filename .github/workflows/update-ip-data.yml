@@ -1,0 +1,98 @@
+name: Update IP country data
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "15 4 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  update-ip-data:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download and split IP database
+        run: |
+          rm -rf data/ipv4
+          mkdir -p data/ipv4
+
+          python <<'PY'
+          import csv
+          import ipaddress
+          import os
+          import urllib.request
+
+          source_url = "https://github.com/sapics/ip-location-db/releases/download/latest/user-country-ipv4.csv"
+          source_file = "/tmp/user-country-ipv4.csv"
+
+          print("Downloading latest IP country database...")
+          urllib.request.urlretrieve(source_url, source_file)
+
+          output_folder = "data/ipv4"
+
+          files = {}
+          writers = {}
+
+          try:
+              with open(source_file, newline="", encoding="utf-8") as source:
+                  reader = csv.reader(source)
+
+                  for row in reader:
+                      if len(row) < 3:
+                          continue
+
+                      try:
+                          start_ip = int(ipaddress.ip_address(row[0].strip()))
+                          end_ip = int(ipaddress.ip_address(row[1].strip()))
+                          country = row[2].strip()
+                      except ValueError:
+                          continue
+
+                      first_file = start_ip >> 24
+                      last_file = end_ip >> 24
+
+                      for first_octet in range(first_file, last_file + 1):
+                          if first_octet not in files:
+                              path = os.path.join(
+                                  output_folder,
+                                  str(first_octet) + ".csv"
+                              )
+                              files[first_octet] = open(
+                                  path,
+                                  "w",
+                                  newline="",
+                                  encoding="utf-8"
+                              )
+                              writers[first_octet] = csv.writer(
+                                  files[first_octet]
+                              )
+
+                          writers[first_octet].writerow(
+                              [start_ip, end_ip, country]
+                          )
+
+          finally:
+              for file in files.values():
+                  file.close()
+
+          print("Finished creating IP country files.")
+          PY
+
+      - name: Save updated files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add data/ipv4
+
+          if git diff --cached --quiet; then
+            echo "No database changes today."
+          else
+            git commit -m "Update IP country database"
+            git push
+          fi
